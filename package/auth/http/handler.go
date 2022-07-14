@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/gin-gonic/gin"
 	"github.com/skinnykaen/robbo_student_personal_account.git/package/auth"
+	"github.com/skinnykaen/robbo_student_personal_account.git/package/models"
 	"net/http"
 )
 
@@ -24,12 +25,14 @@ func (h *Handler) InitAuthRoutes(router *gin.Engine) {
 		auth.POST("/sign-in", h.SignIn)
 		auth.GET("/refresh", h.Refresh)
 		auth.POST("/sign-out", h.SignOut)
+		auth.GET("/check-auth", h.CheckAuth)
 	}
 }
 
 type signInput struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
+	Role     uint   `json:"role"`
 }
 
 type signInResponse struct {
@@ -37,30 +40,30 @@ type signInResponse struct {
 }
 
 func (h *Handler) SignIn(c *gin.Context) {
-	inp := new(signInput)
+	fmt.Println("SignIn")
 
-	if err := c.BindJSON(inp); err != nil {
+	userHttp := &models.UserHttp{}
+
+	if err := c.BindJSON(userHttp); err != nil {
 		c.AbortWithStatus(http.StatusBadRequest)
 		return
 	}
 
-	accessToken, refreshToken, err := h.delegate.SignIn(inp.Email, inp.Password)
+	accessToken, refreshToken, err := h.delegate.SignIn(userHttp)
 	if err != nil {
-		if err == auth.ErrUserNotFound {
-			c.AbortWithStatus(http.StatusUnauthorized)
-			return
-		}
-
-		c.AbortWithStatus(http.StatusInternalServerError)
+		ErrorHandling(err, c)
 		return
 	}
 
-	http.SetCookie(c.Writer, &http.Cookie{
-		Name:     "token",
+	cookie := &http.Cookie{
+		Name:     "refreshToken",
 		Value:    refreshToken,
-		MaxAge:   30 * 24 * 60 * 60,
-		HttpOnly: false,
-	})
+		MaxAge:   60 * 60 * 24 * 15,
+		HttpOnly: true,
+	}
+
+	http.SetCookie(c.Writer, cookie)
+
 	c.JSON(http.StatusOK, signInResponse{
 		AccessToken: accessToken,
 	})
@@ -68,23 +71,24 @@ func (h *Handler) SignIn(c *gin.Context) {
 
 func (h *Handler) SignUp(c *gin.Context) {
 	fmt.Println("SignUp")
-	inp := new(signInput)
 
-	if err := c.BindJSON(inp); err != nil {
+	userHttp := &models.UserHttp{}
+
+	if err := c.BindJSON(userHttp); err != nil {
 		c.AbortWithStatus(http.StatusBadRequest)
 		return
 	}
 
-	accessToken, refreshToken, err := h.delegate.SignUp(inp.Email, inp.Password)
+	accessToken, refreshToken, err := h.delegate.SignUp(userHttp)
 	if err != nil {
-		c.AbortWithStatus(http.StatusInternalServerError)
+		ErrorHandling(err, c)
 		return
 	}
 
 	http.SetCookie(c.Writer, &http.Cookie{
 		Name:     "token",
 		Value:    refreshToken,
-		MaxAge:   30 * 24 * 60 * 60,
+		MaxAge:   60 * 60 * 24 * 15,
 		HttpOnly: false,
 	})
 
@@ -95,9 +99,9 @@ func (h *Handler) SignUp(c *gin.Context) {
 
 func (h *Handler) Refresh(c *gin.Context) {
 	fmt.Println("Refresh")
-	tokenStr, err := c.Cookie("token")
 
-	fmt.Println(tokenStr)
+	tokenStr, err := c.Cookie("refreshToken")
+
 	if err != nil {
 		if err == http.ErrNoCookie {
 			c.AbortWithStatus(http.StatusUnauthorized)
@@ -107,19 +111,12 @@ func (h *Handler) Refresh(c *gin.Context) {
 		return
 	}
 
-	newAccessToken, newRefreshToken, err := h.delegate.RefreshToken(tokenStr)
+	newAccessToken, err := h.delegate.RefreshToken(tokenStr)
 	if err != nil {
 		fmt.Println(err)
 		c.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
-
-	http.SetCookie(c.Writer, &http.Cookie{
-		Name:     "token",
-		Value:    newRefreshToken,
-		MaxAge:   30 * 24 * 60 * 60,
-		HttpOnly: false,
-	})
 
 	c.JSON(http.StatusOK, signInResponse{
 		AccessToken: newAccessToken,
@@ -129,11 +126,53 @@ func (h *Handler) Refresh(c *gin.Context) {
 func (h *Handler) SignOut(c *gin.Context) {
 	fmt.Println("SignOut")
 
-	c.SetCookie("token", "", -1, ":3030/", "localhost", false, false)
-
-	tokenStr, _ := c.Cookie("token")
-	fmt.Println("выход")
-	fmt.Println(tokenStr)
+	cookie := &http.Cookie{
+		Name:     "refreshToken",
+		Value:    "",
+		MaxAge:   -1,
+		HttpOnly: false,
+	}
+	http.SetCookie(c.Writer, cookie)
 
 	c.Status(http.StatusOK)
+}
+
+type userIdentity struct {
+	Id   string `json:"id"`
+	Role uint   `json:"role"`
+}
+
+func (h *Handler) CheckAuth(c *gin.Context) {
+	fmt.Println("CheckAuth")
+	userId, role, err := h.userIdentity(c)
+	if err != nil {
+		c.AbortWithStatus(http.StatusUnauthorized)
+		return
+	}
+	c.JSON(http.StatusOK, &userIdentity{
+		userId,
+		uint(role),
+	})
+}
+
+func ErrorHandling(err error, c *gin.Context) {
+	switch err {
+	case auth.ErrUserAlreadyExist:
+		c.AbortWithStatusJSON(http.StatusInternalServerError, err.Error())
+		return
+	case auth.ErrInvalidAccessToken:
+		c.AbortWithStatusJSON(http.StatusUnauthorized, err.Error())
+		return
+	case auth.ErrInvalidTypeClaims:
+		c.AbortWithStatusJSON(http.StatusUnauthorized, err.Error())
+		return
+	case auth.ErrUserNotFound:
+		c.AbortWithStatusJSON(http.StatusUnauthorized, err.Error())
+		return
+	case auth.ErrTokenNotFound:
+		c.AbortWithStatusJSON(http.StatusUnauthorized, err.Error())
+		return
+	default:
+		c.AbortWithStatusJSON(http.StatusInternalServerError, err.Error())
+	}
 }
