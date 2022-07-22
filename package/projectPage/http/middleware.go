@@ -1,31 +1,28 @@
 package http
 
 import (
+	"errors"
 	"github.com/gin-gonic/gin"
-	"github.com/skinnykaen/robbo_student_personal_account.git/package/auth"
-	"github.com/skinnykaen/robbo_student_personal_account.git/package/models"
 	"github.com/spf13/viper"
 	"strings"
 )
 
 const (
 	authorizationHeader = "Authorization"
+	userCtx             = "userId"
 )
 
-func (h *Handler) userIdentity(c *gin.Context) (id string, role models.Role, err error) {
+func (h *Handler) userIdentity(c *gin.Context) (id string, err error) {
 	header := c.GetHeader(authorizationHeader)
 	if header == "" {
-		return "", models.Role(0), auth.ErrTokenNotFound
+		return "", errors.New("token not found")
 	}
 
 	headerParts := strings.Split(header, " ")
 	if len(headerParts) != 2 {
-		return "", models.Role(0), auth.ErrTokenNotFound
+		return "", errors.New("token not found")
+		return
 	}
 
-	claims, err := h.authDelegate.ParseToken(headerParts[1], []byte(viper.GetString("auth.access_signing_key")))
-	if err != nil {
-		return "", models.Role(0), auth.ErrTokenNotFound
-	}
-	return claims.Id, claims.Role, nil
+	return h.authDelegate.ParseToken(headerParts[1], []byte(viper.GetString("auth.access_signing_key")))
 }

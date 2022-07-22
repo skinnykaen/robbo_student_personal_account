@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"crypto/sha1"
+	"errors"
 	"fmt"
 	"github.com/dgrijalva/jwt-go/v4"
 	"github.com/skinnykaen/robbo_student_personal_account.git/package/auth"
@@ -44,22 +45,22 @@ func SetupAuthUseCase(gateway auth.Gateway) AuthUseCaseModule {
 	}
 }
 
-func (a *AuthUseCaseImpl) SignIn(userCore *models.UserCore) (accessToken, refreshToken string, err error) {
+func (a *AuthUseCaseImpl) SignIn(email, password string) (accessToken, refreshToken string, err error) {
 	pwd := sha1.New()
-	pwd.Write([]byte(userCore.Password))
+	pwd.Write([]byte(password))
 	pwd.Write([]byte(a.hashSalt))
-	password := fmt.Sprintf("%x", pwd.Sum(nil))
+	password = fmt.Sprintf("%x", pwd.Sum(nil))
 
-	user, err := a.Gateway.GetUser(userCore.Email, password)
+	user, err := a.Gateway.GetUser(email, password)
 	if err != nil {
-		return
+		return "", "", auth.ErrUserNotFound
 	}
 
-	accessToken, err = a.GenerateToken(user, a.accessExpireDuration, a.accessSigningKey)
+	accessToken, err = a.GenerateToken(user.ID, a.accessExpireDuration, a.accessSigningKey)
 	if err != nil {
 		return "", "", err
 	}
-	refreshToken, err = a.GenerateToken(user, a.refreshExpireDuration, a.refreshSigningKey)
+	refreshToken, err = a.GenerateToken(user.ID, a.refreshExpireDuration, a.refreshSigningKey)
 	if err != nil {
 		return "", "", err
 	}
@@ -67,58 +68,56 @@ func (a *AuthUseCaseImpl) SignIn(userCore *models.UserCore) (accessToken, refres
 	return
 }
 
-func (a *AuthUseCaseImpl) SignUp(userCore *models.UserCore) (accessToken, refreshToken string, err error) {
+func (a *AuthUseCaseImpl) SignUp(email, password string) (accessToken, refreshToken string, err error) {
 	pwd := sha1.New()
-	pwd.Write([]byte(userCore.Password))
+	pwd.Write([]byte(password))
 	pwd.Write([]byte(a.hashSalt))
 
-	userCore.Password = fmt.Sprintf("%x", pwd.Sum(nil))
+	user := &models.UserCore{
+		Email:    email,
+		Password: fmt.Sprintf("%x", pwd.Sum(nil)),
+	}
 
-	id, err := a.Gateway.CreateUser(userCore)
+	id, err := a.Gateway.CreateUser(user)
 	if err != nil {
 		return "", "", err
 	}
-	userCore.ID = id
 
-	accessToken, err = a.GenerateToken(userCore, a.accessExpireDuration, a.accessSigningKey)
+	accessToken, err = a.GenerateToken(id, a.accessExpireDuration, a.accessSigningKey)
 	if err != nil {
 		return "", "", err
 	}
-	refreshToken, err = a.GenerateToken(userCore, a.refreshExpireDuration, a.refreshSigningKey)
+	refreshToken, err = a.GenerateToken(id, a.refreshExpireDuration, a.refreshSigningKey)
 
 	return
 }
 
-func (a *AuthUseCaseImpl) ParseToken(token string, key []byte) (claims *models.UserClaims, err error) {
-	data, err := jwt.ParseWithClaims(token, &models.UserClaims{},
+func (a *AuthUseCaseImpl) ParseToken(token string, key []byte) (id string, err error) {
+	data, err := jwt.ParseWithClaims(token, &jwt.StandardClaims{},
 		func(token *jwt.Token) (interface{}, error) {
 			return []byte(key), nil
 		})
 	if err != nil {
-		return &models.UserClaims{}, err
+		return "0", err
 	}
 
-	claims, ok := data.Claims.(*models.UserClaims)
+	claims, ok := data.Claims.(*jwt.StandardClaims)
 	if !ok {
-		return &models.UserClaims{}, auth.ErrInvalidTypeClaims
+		return "0", errors.New("token claims are not of type *StandardClaims")
 	}
-	return
+
+	return claims.Subject, nil
 }
 
 func (a *AuthUseCaseImpl) RefreshToken(token string) (newAccessToken string, err error) {
-	claims, err := a.ParseToken(token, a.refreshSigningKey)
+	id, err := a.ParseToken(token, a.refreshSigningKey)
 
 	if err != nil {
 		fmt.Println(err)
 		return "", err
 	}
 
-	user := &models.UserCore{
-		ID:   claims.Id,
-		Role: claims.Role,
-	}
-
-	newAccessToken, err = a.GenerateToken(user, a.accessExpireDuration, a.accessSigningKey)
+	newAccessToken, err = a.GenerateToken(id, a.accessExpireDuration, a.accessSigningKey)
 	if err != nil {
 		return "", err
 	}
@@ -126,13 +125,10 @@ func (a *AuthUseCaseImpl) RefreshToken(token string) (newAccessToken string, err
 	return
 }
 
-func (a *AuthUseCaseImpl) GenerateToken(user *models.UserCore, duration time.Duration, signingKey []byte) (token string, err error) {
-	claims := models.UserClaims{
-		StandardClaims: jwt.StandardClaims{
-			ExpiresAt: jwt.At(time.Now().Add(duration * time.Second)),
-		},
-		Id:   user.ID,
-		Role: user.Role,
+func (a *AuthUseCaseImpl) GenerateToken(id string, duration time.Duration, signingKey []byte) (token string, err error) {
+	claims := jwt.StandardClaims{
+		ExpiresAt: jwt.At(time.Now().Add(duration * time.Second)),
+		Subject:   id,
 	}
 	ss := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	token, err = ss.SignedString(signingKey)

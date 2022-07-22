@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"github.com/gin-gonic/gin"
 	"github.com/skinnykaen/robbo_student_personal_account.git/package/auth"
-	"github.com/skinnykaen/robbo_student_personal_account.git/package/models"
 	"net/http"
 )
 
@@ -32,7 +31,6 @@ func (h *Handler) InitAuthRoutes(router *gin.Engine) {
 type signInput struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
-	Role     uint   `json:"role"`
 }
 
 type signInResponse struct {
@@ -40,18 +38,21 @@ type signInResponse struct {
 }
 
 func (h *Handler) SignIn(c *gin.Context) {
-	fmt.Println("SignIn")
+	inp := new(signInput)
 
-	userHttp := &models.UserHttp{}
-
-	if err := c.BindJSON(userHttp); err != nil {
+	if err := c.BindJSON(inp); err != nil {
 		c.AbortWithStatus(http.StatusBadRequest)
 		return
 	}
 
-	accessToken, refreshToken, err := h.delegate.SignIn(userHttp)
+	accessToken, refreshToken, err := h.delegate.SignIn(inp.Email, inp.Password)
 	if err != nil {
-		ErrorHandling(err, c)
+		if err == auth.ErrUserNotFound {
+			c.AbortWithStatus(http.StatusUnauthorized)
+			return
+		}
+
+		c.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
 
@@ -71,17 +72,16 @@ func (h *Handler) SignIn(c *gin.Context) {
 
 func (h *Handler) SignUp(c *gin.Context) {
 	fmt.Println("SignUp")
+	inp := new(signInput)
 
-	userHttp := &models.UserHttp{}
-
-	if err := c.BindJSON(userHttp); err != nil {
+	if err := c.BindJSON(inp); err != nil {
 		c.AbortWithStatus(http.StatusBadRequest)
 		return
 	}
 
-	accessToken, refreshToken, err := h.delegate.SignUp(userHttp)
+	accessToken, refreshToken, err := h.delegate.SignUp(inp.Email, inp.Password)
 	if err != nil {
-		ErrorHandling(err, c)
+		c.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
 
@@ -137,42 +137,12 @@ func (h *Handler) SignOut(c *gin.Context) {
 	c.Status(http.StatusOK)
 }
 
-type userIdentity struct {
-	Id   string `json:"id"`
-	Role uint   `json:"role"`
-}
-
 func (h *Handler) CheckAuth(c *gin.Context) {
 	fmt.Println("CheckAuth")
-	userId, role, err := h.userIdentity(c)
+	userId, err := h.userIdentity(c)
 	if err != nil {
 		c.AbortWithStatus(http.StatusUnauthorized)
 		return
 	}
-	c.JSON(http.StatusOK, &userIdentity{
-		userId,
-		uint(role),
-	})
-}
-
-func ErrorHandling(err error, c *gin.Context) {
-	switch err {
-	case auth.ErrUserAlreadyExist:
-		c.AbortWithStatusJSON(http.StatusInternalServerError, err.Error())
-		return
-	case auth.ErrInvalidAccessToken:
-		c.AbortWithStatusJSON(http.StatusUnauthorized, err.Error())
-		return
-	case auth.ErrInvalidTypeClaims:
-		c.AbortWithStatusJSON(http.StatusUnauthorized, err.Error())
-		return
-	case auth.ErrUserNotFound:
-		c.AbortWithStatusJSON(http.StatusUnauthorized, err.Error())
-		return
-	case auth.ErrTokenNotFound:
-		c.AbortWithStatusJSON(http.StatusUnauthorized, err.Error())
-		return
-	default:
-		c.AbortWithStatusJSON(http.StatusInternalServerError, err.Error())
-	}
+	c.JSON(http.StatusOK, userId)
 }
